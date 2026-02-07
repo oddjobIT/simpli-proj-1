@@ -1,142 +1,78 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: WordPress PROD - Single EC2 (AL2023 ARM64), VPC vpc-0b925d4fac7b3861e, Subnet subnet-04856bc381de403b2, explicit EBS gp3, SSM access
+Description: Launch WordPress EC2 instance from golden AMI with a public IPv4 on launch
 
 Parameters:
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0138367b8c6c73669
+    Description: AMI ID (km-simpli-wp-ami)
+
   InstanceType:
     Type: String
     Default: t4g.micro
     AllowedValues:
       - t4g.micro
-      - t4g.small
-      - t4g.medium
+      
+    Description: EC2 instance type
 
-  RootVolumeSize:
-    Type: Number
-    Default: 20
-    MinValue: 8
-    MaxValue: 200
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: km-ec2-key
+    Description: Existing EC2 KeyPair name for SSH access
 
-  AllowHttpCidr:
-    Type: String
-    Default: 0.0.0.0/0
-    Description: CIDR allowed to access HTTP. For prod, lock down if possible (your IP/32).
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-0b925d4fac7b3861e
+    Description: VPC to launch into
 
-  DbName:
-    Type: String
-    Default: wordpress
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-04856bc381de403b2
+    Description: Subnet to launch into (must be a public subnet with a route to an Internet Gateway)
 
-  DbUser:
-    Type: String
-    Default: wpuser
-
-  DbPassword:
-    Type: String
-    NoEcho: true
-    MinLength: 12
-    Description: Local DB password (strong). Stored in wp-config.php.
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-0c3996629c834fa0f
+    Description: Existing Security Group ID to attach to the instance ENI
 
 Resources:
-  InstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [!Ref InstanceRole]
-
-  ProdWebSG:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Prod WordPress SG (HTTP only)
-      VpcId: vpc-0b925d4fac7b3861e
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: !Ref AllowHttpCidr
-
-  ProdInstance:
+  WordpressInstance:
     Type: AWS::EC2::Instance
     Properties:
+      ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
-      SubnetId: subnet-04856bc381de403b2
-      IamInstanceProfile: !Ref InstanceProfile
-      SecurityGroupIds: [!Ref ProdWebSG]
+      KeyName: !Ref KeyName
 
-      # Amazon Linux 2023 ARM64 (Graviton) - no hardcoded AMI IDs
-      ImageId: !Sub "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64}}"
+      # Force a public IP at launch via an ENI
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: true
+          SubnetId: !Ref SubnetId
+          GroupSet:
+            - !Ref SecurityGroupId
 
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            VolumeType: gp3
-            VolumeSize: !Ref RootVolumeSize
-            DeleteOnTermination: true
-            Encrypted: true
-
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-prod-wordpress"
-        - Key: Environment
-          Value: Prod
-        - Key: Application
-          Value: WordPress
-
+      # Optional: ensure services are up on first boot
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -euxo pipefail
+          set -e
+          systemctl enable httpd mariadb || true
+          systemctl restart mariadb || true
+          systemctl restart httpd || true
 
-          dnf update -y
-          dnf install -y httpd php php-mysqlnd php-gd php-xml php-mbstring mariadb-server unzip curl rsync
-
-          systemctl enable --now httpd mariadb
-
-          # Create local DB + user
-          mysql -u root <<SQL
-          CREATE DATABASE ${DbName};
-          CREATE USER '${DbUser}'@'localhost' IDENTIFIED BY '${DbPassword}';
-          GRANT ALL PRIVILEGES ON ${DbName}.* TO '${DbUser}'@'localhost';
-          FLUSH PRIVILEGES;
-          SQL
-
-          # Install WordPress
-          cd /var/www/html
-          curl -L -o latest.zip https://wordpress.org/latest.zip
-          unzip -q latest.zip
-          rsync -a wordpress/ /var/www/html/
-          rm -rf wordpress latest.zip
-
-          # Configure WordPress
-          cp wp-config-sample.php wp-config.php
-          sed -i "s/database_name_here/${DbName}/" wp-config.php
-          sed -i "s/username_here/${DbUser}/" wp-config.php
-          sed -i "s/password_here/${DbPassword}/" wp-config.php
-
-          # Permissions
-          chown -R apache:apache /var/www/html
-          find /var/www/html -type d -exec chmod 755 {} \;
-          find /var/www/html -type f -exec chmod 644 {} \;
-
-          systemctl restart httpd
+      Tags:
+        - Key: Name
+          Value: km-simpli-wp
 
 Outputs:
-  ProdURL:
-    Description: Open to finish the WordPress setup wizard
-    Value: !Sub "http://${ProdInstance.PublicDnsName}/"
-
   InstanceId:
-    Value: !Ref ProdInstance
+    Description: EC2 Instance ID
+    Value: !Ref WordpressInstance
 
-  SecurityGroupId:
-    Value: !Ref ProdWebSG
+  PublicIp:
+    Description: Public IPv4 address
+    Value: !GetAtt WordpressInstance.PublicIp
+
+  PublicDnsName:
+    Description: Public DNS name
+    Value: !GetAtt WordpressInstance.PublicDnsName
