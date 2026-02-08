@@ -4,7 +4,7 @@ Description: ASG schedules 1 instance weekdays 9AM-6PM (America/New_York), 0 ins
 Parameters:
   AmiId:
     Type: AWS::EC2::Image::Id
-    Default: ami-0138367b8c6c73669
+    Default: ami-082cbb83886c337ec
     Description: ARM64 AMI ID (km-simpli-wp-ami)
 
   InstanceType:
