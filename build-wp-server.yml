@@ -12,8 +12,6 @@ Parameters:
     Default: t4g.micro
     AllowedValues:
       - t4g.micro
-      - t4g.small
-      - t4g.medium
     Description: EC2 instance type (ARM64)
 
   KeyName:
