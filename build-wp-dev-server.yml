@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: WordPress dev environment: ASG schedules 1 instance weekdays 9AM-6PM (America/New_York), 0 instances off-hours
+Description: ASG schedules 1 instance weekdays 9AM-6PM (America/New_York), 0 instances off-hours
 
 Parameters:
   AmiId:
