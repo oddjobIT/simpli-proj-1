@@ -1,19 +1,20 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: Launch WordPress EC2 instance from golden AMI with a public IPv4 on launch
+Description: Launch WordPress via Auto Scaling Group (always 1 instance) from ARM64 golden AMI, with public IPv4 on launch
 
 Parameters:
   AmiId:
     Type: AWS::EC2::Image::Id
     Default: ami-0138367b8c6c73669
-    Description: AMI ID (km-simpli-wp-ami)
+    Description: AMI ID (km-simpli-wp-ami) - ARM64
 
   InstanceType:
     Type: String
     Default: t4g.micro
     AllowedValues:
       - t4g.micro
-      
-    Description: EC2 instance type
+      - t4g.small
+      - t4g.medium
+    Description: EC2 instance type (ARM64)
 
   KeyName:
     Type: AWS::EC2::KeyPair::KeyName
@@ -23,56 +24,69 @@ Parameters:
   VpcId:
     Type: AWS::EC2::VPC::Id
     Default: vpc-0b925d4fac7b3861e
-    Description: VPC to launch into
+    Description: VPC (informational; not required when using SubnetIds + SG)
 
-  SubnetId:
-    Type: AWS::EC2::Subnet::Id
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
     Default: subnet-04856bc381de403b2
-    Description: Subnet to launch into (must be a public subnet with a route to an Internet Gateway)
+    Description: Subnets for the ASG (use 2 public subnets in different AZs for best resilience)
 
   SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Default: sg-0c3996629c834fa0f
-    Description: Existing Security Group ID to attach to the instance ENI
+    Description: Existing Security Group ID
 
 Resources:
-  WordpressInstance:
-    Type: AWS::EC2::Instance
+  WordpressLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Properties:
-      ImageId: !Ref AmiId
-      InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyName
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
 
-      # Force a public IP at launch via an ENI
-      NetworkInterfaces:
-        - DeviceIndex: 0
-          AssociatePublicIpAddress: true
-          SubnetId: !Ref SubnetId
-          GroupSet:
-            - !Ref SecurityGroupId
+        # Force a public IP at launch
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref SecurityGroupId
 
-      # Optional: ensure services are up on first boot
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -e
-          systemctl enable httpd mariadb || true
-          systemctl restart mariadb || true
-          systemctl restart httpd || true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            systemctl enable httpd mariadb || true
+            systemctl restart mariadb || true
+            systemctl restart httpd || true
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: km-simpli-wp
+
+  WordpressAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      VPCZoneIdentifier: !Ref SubnetIds
+
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 180
+
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WordpressLaunchTemplate
+        Version: !GetAtt WordpressLaunchTemplate.LatestVersionNumber
 
       Tags:
         - Key: Name
           Value: km-simpli-wp
+          PropagateAtLaunch: true
 
 Outputs:
-  InstanceId:
-    Description: EC2 Instance ID
-    Value: !Ref WordpressInstance
-
-  PublicIp:
-    Description: Public IPv4 address
-    Value: !GetAtt WordpressInstance.PublicIp
-
-  PublicDnsName:
-    Description: Public DNS name
-    Value: !GetAtt WordpressInstance.PublicDnsName
+  AsgName:
+    Description: Auto Scaling Group name
+    Value: !Ref WordpressAsg
