@@ -1,0 +1,105 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: WordPress dev environment: ASG schedules 1 instance weekdays 9AM-6PM (America/New_York), 0 instances off-hours
+
+Parameters:
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-0138367b8c6c73669
+    Description: ARM64 AMI ID (km-simpli-wp-ami)
+
+  InstanceType:
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t4g.micro
+    Description: ARM64 instance types (Graviton)
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: km-ec2-key
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-04856bc381de403b2
+    Description: Use 2 public subnets in different AZs for best resilience (one is OK for lab)
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-0c3996629c834fa0f
+
+Resources:
+  WordpressLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+
+        # Force public IP on launch
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref SecurityGroupId
+
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            systemctl enable httpd mariadb || true
+            systemctl restart mariadb || true
+            systemctl restart httpd || true
+
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: km-simpli-wp-dev
+
+  WordpressAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      # Default OFF (the schedules will turn it on during business hours)
+      MinSize: "0"
+      MaxSize: "0"
+      DesiredCapacity: "0"
+
+      VPCZoneIdentifier: !Ref SubnetIds
+
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 180
+
+      LaunchTemplate:
+        LaunchTemplateId: !Ref WordpressLaunchTemplate
+        Version: !GetAtt WordpressLaunchTemplate.LatestVersionNumber
+
+      Tags:
+        - Key: Name
+          Value: km-simpli-wp-dev
+          PropagateAtLaunch: true
+
+  ScaleUpWeekdays:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: !Ref WordpressAsg
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+      Recurrence: "0 9 * * 1-5"
+      TimeZone: "America/New_York"
+
+  ScaleDownWeekdays:
+    Type: AWS::AutoScaling::ScheduledAction
+    Properties:
+      AutoScalingGroupName: !Ref WordpressAsg
+      MinSize: 0
+      MaxSize: 0
+      DesiredCapacity: 0
+      Recurrence: "0 18 * * 1-5"
+      TimeZone: "America/New_York"
+
+Outputs:
+  AsgName:
+    Description: Auto Scaling Group name
+    Value: !Ref WordpressAsg
